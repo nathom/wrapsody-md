@@ -1,7 +1,5 @@
-use comrak::arena_tree::{Children, Node};
-use comrak::nodes::{Ast, AstNode, NodeValue};
+use comrak::nodes::{AstNode, NodeValue};
 use comrak::{format_commonmark, parse_document, Arena, ComrakOptions};
-use std::cell::RefCell;
 use std::fs;
 
 use std::fs::File;
@@ -9,66 +7,47 @@ use std::io::{self, Read};
 
 use clap::Parser;
 use std::str;
+use std::str::Utf8Error;
+// use std::string::FromUtf8Error;
 use textwrap::core::{Fragment, Word};
-use textwrap::{self, wrap_algorithms::Penalties, WordSeparator, WrapAlgorithm};
+use textwrap::wrap_algorithms::{wrap_optimal_fit, Penalties};
+use textwrap::{self, WordSeparator};
 
-// The returned nodes are created in the supplied Arena, and are bound by its lifetime.
-
-// fn iter_nodes<'a, F>(node: &'a AstNode<'a>, f: &F)
-// where
-//     F: Fn(&'a AstNode<'a>),
-// {
-//     f(node);
-//     for c in node.children() {
-//         iter_nodes(c, f);
-//     }
-// }
-
-#[derive(Debug)]
-enum Style {
-    Normal,
+#[derive(Debug, Clone)]
+enum WordStyle {
+    // Normal,
     Emph,
     Strong,
     Strikethrough,
     Superscript,
 }
 
+impl WordStyle {
+    fn added_width(&self) -> usize {
+        match self {
+            Self::Emph => 2,          // *__*
+            Self::Strong => 4,        // **__**
+            Self::Strikethrough => 4, // ~~__~~
+            Self::Superscript => 11,  // <sup>__</sup>
+        }
+    }
+}
+
 #[derive(Debug)]
 struct StyledWord<'a> {
     word: Word<'a>,
-    style: Style,
+    style: &'a Vec<WordStyle>,
 }
 
 impl<'a> StyledWord<'a> {
-    fn normal(word: Word<'a>) -> Self {
-        Self {
-            word,
-            style: Style::Normal,
-        }
-    }
-    fn emph(word: Word<'a>) -> Self {
-        Self {
-            word,
-            style: Style::Emph,
-        }
-    }
-    fn strong(word: Word<'a>) -> Self {
-        Self {
-            word,
-            style: Style::Strong,
-        }
-    }
-    fn strong(word: Word<'a>) -> Self {
-        Self {
-            word,
-            style: Style::Strong,
-        }
+    fn from(word: Word<'a>, style: &'a Vec<WordStyle>) -> Self {
+        Self { word, style }
     }
 }
 
 impl Fragment for StyledWord<'_> {
     fn width(&self) -> f64 {
-        self.word.width()
+        self.word.width() + (self.style.iter().map(|s| s.added_width()).sum::<usize>() as f64)
     }
     fn whitespace_width(&self) -> f64 {
         self.word.whitespace_width()
@@ -82,179 +61,105 @@ struct Options {
     line_width: usize,
 }
 
-impl Options {
-    // fn default() -> Self {
-    //     Self { line_width: 50 }
-    // }
-}
-
-struct Lines<'a> {
-    opt: textwrap::Options<'a>,
+struct TaggedString {
     buf: String,
+    styles: Vec<(usize, Vec<WordStyle>)>,
 }
 
-impl<'a> Lines<'a> {
-    fn new(options: &Options) -> Self {
-        let opt = textwrap::Options::new(options.line_width)
-            .wrap_algorithm(WrapAlgorithm::OptimalFit(Penalties::new()));
+impl TaggedString {
+    fn new() -> Self {
         Self {
-            opt,
             buf: String::new(),
+            styles: vec![],
         }
     }
-
-    fn push(&mut self, v: &[u8]) -> Result<(), str::Utf8Error> {
-        self.buf.push_str(str::from_utf8(v)?);
-        Ok(())
-    }
-
-    fn push_char(&mut self, c: char) {
-        self.buf.push(c);
-    }
-
-    fn extend(&mut self, l: Lines<'a>) {
-        self.buf.push_str(&l.buf);
-    }
 }
-
-struct WrappedLines {
-    wrapped: Vec<String>,
-}
-
-impl<'a> Into<WrappedLines> for Lines<'a> {
-    fn into(self) -> WrappedLines {
-        let wrapped = textwrap::wrap(&self.buf, self.opt)
-            .iter()
-            .map(|c| c.clone().into_owned())
-            .collect();
-        // let wrapped = wrapped.iter().map(move |c| c.into_owned()).collect();
-        WrappedLines { wrapped }
-    }
-}
-
-impl WrappedLines {
-    fn lines(&self) -> &Vec<String> {
-        &self.wrapped
-    }
-}
-
-// TODO: remove debug bound
-fn wrap_text_elems<'a>(
-    // parent: &mut Node<RefCell<Ast>>,
-    nodes: &'a mut Children<RefCell<Ast>>,
+fn tag_paragraph_with_styles<'a>(
+    paragraph: &'a AstNode<'a>,
+    arena: &'a Arena<AstNode<'a>>,
     opt: &Options,
-) -> Result<Lines<'a>, str::Utf8Error> {
-    let mut lines = Lines::new(opt);
-    for n in nodes {
-        // println!("n: {:#?}", n);
-        match &n.data.borrow().value {
-            NodeValue::Text(text) => {
-                lines.push(&text)?;
-                lines.push_char(' ');
-            }
+    ts: &mut TaggedString,
+    context: &mut Vec<WordStyle>,
+) -> Result<(), Utf8Error> {
+    let text_elems = paragraph.children();
 
-            NodeValue::SoftBreak => (),
-            // NodeValue::Emph => {
-            //     let emph_lines = wrap_text_elems(&mut n.children(), opt);
-            //     lines.extend(emph_lines?);
-            // }
-            other => println!("found other: {:?}", other),
-            // _ => panic!(),
-        }
-    }
-    // lines.wrap();
-    Ok(lines)
-}
-
-fn wrap_list<'a>(
-    list: &'a Node<'a, RefCell<Ast>>,
-    // nodes: &'a mut Children<RefCell<Ast>>,
-    arena: &'a Arena<Node<'a, RefCell<Ast>>>,
-    opt: &Options,
-) {
-    for item in list.children() {
-        let val = { &item.data.borrow().value };
-        // println!("val: {:?}", n.data) ;
+    for n in text_elems {
+        let val = &n.data.borrow().value;
         match val {
-            NodeValue::Item(_metadata) => {
-                for paragraph in item.children() {
-                    wrap_paragraph(paragraph, arena, opt);
-                }
+            NodeValue::Text(text) => {
+                let s = str::from_utf8(&text)?;
+                let prev_len = ts.buf.len();
+                ts.buf.push_str(s);
+                ts.styles.push((prev_len, context.clone()));
             }
+            NodeValue::Emph => {
+                context.push(WordStyle::Emph);
+                tag_paragraph_with_styles(n, arena, opt, ts, context)?;
+                context.pop();
+            }
+            NodeValue::Strong => {
+                context.push(WordStyle::Strong);
+                tag_paragraph_with_styles(n, arena, opt, ts, context)?;
+                context.pop();
+            }
+            NodeValue::Strikethrough => {
+                context.push(WordStyle::Strikethrough);
+                tag_paragraph_with_styles(n, arena, opt, ts, context)?;
+                context.pop();
+            }
+            NodeValue::Superscript => {
+                context.push(WordStyle::Superscript);
+                tag_paragraph_with_styles(n, arena, opt, ts, context)?;
+                context.pop();
+            }
+            NodeValue::Link(_link) => {}
+            NodeValue::Image(_link) => {}
+            NodeValue::FootnoteReference(_name) => {}
             _ => panic!(),
         }
     }
+
+    // let lines = wrap_text_elems(&mut text_elems, opt).unwrap();
+    // let mut wrapped = lines.into();
+    //
+    // for line in paragraph.children() {
+    //     line.detach();
+    // }
+    //
+    // replace_paragraph_children(paragraph, &mut wrapped, arena);
+    Ok(())
 }
 
-fn wrap_paragraph<'a>(paragraph: &'a AstNode<'a>, arena: &'a Arena<AstNode<'a>>, opt: &Options) {
-    let mut text_elems = paragraph.children();
+// fn replace_paragraph_children<'a, 'b>(
+//     paragraph: &'a AstNode<'a>,
+//     wrapped: &'b mut WrappedLines,
+//     arena: &'a Arena<AstNode<'a>>,
+// ) {
+//     for line in wrapped.lines() {
+//         let a = Ast::new(NodeValue::Text(line.as_bytes().to_vec()));
+//         let text = arena.alloc(Node::new(RefCell::new(a)));
+//         let a = Ast::new(NodeValue::SoftBreak);
+//         let newline = arena.alloc(Node::new(RefCell::new(a)));
+//         paragraph.append(text);
+//         paragraph.append(newline);
+//     }
+// }
 
-    let mut words: Vec<StyledWord> = vec![];
-    let sep = WordSeparator::new();
-    let s;
-    for n in text_elems {
-        match n.data.borrow().value {
-            NodeValue::Text(text) => {
-                s = str::from_utf8(text);
-                words.extend(sep.find_words(s).map(move |w| StyledWord::Normal(w)));
-            }
-            NodeValue::Emph => {}
-            NodeValue::Strong => {}
-            NodeValue::Strikethrough => {}
-            NodeValue::Superscript => {}
-            NodeValue::Link(link) => {}
-            NodeValue::Image(link) => {}
-            NodeValue::FootnoteReference(name) => {}
-        }
-    }
-
-    let lines = wrap_text_elems(&mut text_elems, opt).unwrap();
-    let mut wrapped = lines.into();
-
-    for line in paragraph.children() {
-        line.detach();
-    }
-
-    replace_paragraph_children(paragraph, &mut wrapped, arena);
-}
-
-fn replace_paragraph_children<'a, 'b>(
-    paragraph: &'a AstNode<'a>,
-    wrapped: &'b mut WrappedLines,
-    arena: &'a Arena<AstNode<'a>>,
-) {
-    for line in wrapped.lines() {
-        let a = Ast::new(NodeValue::Text(line.as_bytes().to_vec()));
-        let text = arena.alloc(Node::new(RefCell::new(a)));
-        let a = Ast::new(NodeValue::SoftBreak);
-        let newline = arena.alloc(Node::new(RefCell::new(a)));
-        paragraph.append(text);
-        paragraph.append(newline);
-    }
-}
-
-fn format_ast<'a>(root: &'a AstNode<'a>, arena: &'a Arena<AstNode<'a>>, opt: &Options) {
-    for c in root.children() {
-        // TODO: profile this
-        let val = { c.data.borrow().value.clone() };
-        // println!("{:#?}", val);
-        match val {
-            NodeValue::Paragraph => {
-                wrap_paragraph(c, arena, opt);
-            }
-            NodeValue::List(_nl) => {
-                wrap_list(c, arena, opt);
-            }
-            _ => (),
-            // other => println!("found other: {:?}", other),
-        };
-    }
-}
 fn wrap_node<'a>(node: &'a AstNode<'a>, arena: &'a Arena<AstNode<'a>>, opt: &Options) {
     match &node.data.borrow().value {
-        // NodeValue::Paragraph => wrap_paragraph(node, arena, opt),
+        NodeValue::Paragraph => {
+            let mut ts = TaggedString::new();
+            tag_paragraph_with_styles(node, arena, opt, &mut ts, &mut vec![]).unwrap();
+            let words = tagged_string_to_word_vec(&ts);
+            let wrapped =
+                wrap_optimal_fit(&words, &[opt.line_width as f64], &Penalties::new()).unwrap();
+            println!("{:#?}", wrapped);
+            // println!("buf: {}", ts.buf);
+            // println!("styles: {:?}", ts.styles);
+        }
         // NodeValue::Heading(_) => (),
-        v => println!("node: {:?}", v),
+        // v => println!("node: {:?}", v),
+        _ => (),
     }
 
     for n in node.children() {
@@ -262,6 +167,31 @@ fn wrap_node<'a>(node: &'a AstNode<'a>, arena: &'a Arena<AstNode<'a>>, opt: &Opt
         wrap_node(n, arena, opt);
         println!("END child of {:?}", node.data.borrow().value);
     }
+}
+
+fn tagged_string_to_word_vec<'a>(ts: &'a TaggedString) -> Vec<StyledWord<'a>> {
+    let mut words = vec![];
+    let sep = WordSeparator::new();
+
+    let mut styles = ts.styles.iter().peekable();
+    let mut prev_style = styles.next().unwrap();
+    loop {
+        if let Some(style) = styles.next() {
+            words.extend(
+                sep.find_words(&ts.buf[prev_style.0..style.0])
+                    .map(move |w| StyledWord::from(w, &prev_style.1)),
+            );
+            prev_style = style;
+        } else {
+            words.extend(
+                sep.find_words(&ts.buf)
+                    .map(move |w| StyledWord::from(w, &prev_style.1)),
+            );
+            break;
+        }
+    }
+
+    words
 }
 
 /// Wrap markdown files
