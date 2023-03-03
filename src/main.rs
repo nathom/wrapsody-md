@@ -5,7 +5,7 @@ use std::fs;
 
 use std::cell::RefCell;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, BufWriter, Read};
 
 use clap::Parser;
 use std::str;
@@ -308,11 +308,6 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let mut outfile: Box<dyn io::Write> = match args.outfile {
-        Some(filename) => Box::new(File::open(filename)?),
-        None => Box::new(io::stdout()),
-    };
-
     let arena = Arena::new();
 
     // Build AST
@@ -324,7 +319,16 @@ fn main() -> io::Result<()> {
     format_ast(&root, &arena, &options);
 
     // Write AST to output
-    format_commonmark(root, &ComrakOptions::default(), &mut outfile)?;
+    match args.outfile {
+        Some(filename) => {
+            let mut outfile = BufWriter::new(File::open(filename)?);
+            format_commonmark(root, &ComrakOptions::default(), &mut outfile)?;
+        }
+        None => {
+            let mut outfile = BufWriter::new(io::stdout());
+            format_commonmark(root, &ComrakOptions::default(), &mut outfile)?;
+        }
+    }
 
     Ok(())
 }
