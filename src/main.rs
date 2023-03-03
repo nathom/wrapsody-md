@@ -1,15 +1,12 @@
+use std::cell::RefCell;
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Read};
+use std::str::{self, Utf8Error};
+
+use clap::Parser;
 use comrak::arena_tree::Node;
 use comrak::nodes::{Ast, AstNode, NodeValue};
 use comrak::{format_commonmark, parse_document, Arena, ComrakOptions};
-use std::fs;
-
-use std::cell::RefCell;
-use std::fs::File;
-use std::io::{self, BufWriter, Read};
-
-use clap::Parser;
-use std::str;
-use std::str::Utf8Error;
 use textwrap::core::{Fragment, Word};
 use textwrap::wrap_algorithms::{wrap_optimal_fit, Penalties};
 use textwrap::{self, WordSeparator};
@@ -48,7 +45,7 @@ impl Style {
 /// This is the struct that represents one word, which is moved around
 /// by the textwrap library
 ///
-/// StyledWord.style.len() == 0 => normal text
+/// StyledWord.style.is_empty() => normal text
 /// Otherwise it is a list of styles that the string has
 #[derive(Debug)]
 struct StyledWord<'a> {
@@ -225,9 +222,18 @@ fn tagged_string_from_node<'a>(
                 context.pop();
             }
             // FIX: these are broken (test 8)
-            NodeValue::Link(_link) => {}
-            NodeValue::Image(_link) => {}
-            NodeValue::FootnoteReference(_name) => {}
+            // These not being implemented is the cause of the unwrap panic
+            // on test 8
+            NodeValue::Link(_link) => {
+                // convert tree into "{title}\0{url}" with Style::Link
+                // push that string and style into the buffer
+            }
+            NodeValue::Image(_link) => {
+                // same as link, except use Style::Image
+            }
+            NodeValue::FootnoteReference(_name) => {
+                // "
+            }
             _ => panic!(),
         }
     }
