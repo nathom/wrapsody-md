@@ -14,15 +14,17 @@ use textwrap::core::{Fragment, Word};
 use textwrap::wrap_algorithms::{wrap_optimal_fit, Penalties};
 use textwrap::{self, WordSeparator};
 
+/// Passible word styles
 #[derive(Debug, Clone, PartialEq)]
 enum Style {
-    Emph,
-    Strong,
+    Emph,   // italics
+    Strong, // bold
     Strikethrough,
     Superscript,
 }
 
 impl Style {
+    // ditched because it doesn't work
     fn _added_width(&self) -> usize {
         match self {
             Self::Emph => 2,          // *__*
@@ -43,6 +45,11 @@ impl Style {
     }
 }
 
+/// This is the struct that represents one word, which is moved around
+/// by the textwrap library
+///
+/// StyledWord.style.len() == 0 => normal text
+/// Otherwise it is a list of styles that the string has
 #[derive(Debug)]
 struct StyledWord<'a> {
     word: Word<'a>,
@@ -63,6 +70,7 @@ impl<'a> StyledWord<'a> {
     }
 }
 
+// Basically inheriting the Fragment trait from the Word member
 impl Fragment for StyledWord<'_> {
     fn width(&self) -> f64 {
         self.word.width() // + (self.style.iter().map(|s| s.added_width()).sum::<usize>() as f64)
@@ -75,12 +83,26 @@ impl Fragment for StyledWord<'_> {
     }
 }
 
+// Options passed in by the user
+// WIP
 struct Options {
+    /// Maximum line width
     line_width: usize,
 }
 
+/// This is a more efficient intermediate representation
+/// of Vec<StyledWord>
 struct TaggedString {
+    /// All words joined with a space
     buf: String,
+    /// Vec of (starting index, style)
+    ///
+    /// For example [(0, []), (5, [Emph]), (11, [])] would mean the following
+    ///
+    /// this is a sample
+    /// nnnnneeeeennnnnn
+    ///
+    /// Where 'n' denotes normal ([]) style and 'e' is Emph
     styles: Vec<(usize, Vec<Style>)>,
 }
 
@@ -93,6 +115,8 @@ impl TaggedString {
     }
 }
 
+/// Given a wrapped 2D vec of StyledWords, replace the paragraph Node's
+/// children with the wrapped text, with appropriate formatting
 fn replace_paragraph_children<'a, 'b>(
     paragraph: &'a AstNode<'a>,
     arena: &'a Arena<AstNode<'a>>,
@@ -100,11 +124,13 @@ fn replace_paragraph_children<'a, 'b>(
     wrapped: Vec<&[StyledWord<'b>]>,
 ) {
     let mut curr_style: &Vec<Style> = &vec![];
-    let mut buf: Vec<u8>;
+
     // Detach all children
     for c in paragraph.children() {
         c.detach();
     }
+
+    let mut buf: Vec<u8>;
     for line in wrapped {
         // for word in line
         // if style has changed
@@ -136,6 +162,8 @@ fn replace_paragraph_children<'a, 'b>(
     }
 }
 
+/// Returns a node which contains the proper AST that reflects
+/// the styles applyed to buf
 fn create_node_with_style<'a>(
     styles: &Vec<Style>,
     buf: Vec<u8>,
@@ -147,6 +175,7 @@ fn create_node_with_style<'a>(
     }
 
     let mut child = child;
+    // We go in reverse order since we are building bottom-up
     for style in styles.iter().rev() {
         let parent = arena.alloc(style.to_node());
         parent.append(child);
@@ -155,6 +184,10 @@ fn create_node_with_style<'a>(
 
     return child;
 }
+
+/// Given a node with text children (i.e. Paragraph) generate a TaggedString
+/// that gives you a single string with all text, and metadata telling you
+/// the starting positions of styles
 fn tagged_string_from_node<'a>(
     node: &'a AstNode<'a>,
     opt: &Options,
@@ -191,7 +224,8 @@ fn tagged_string_from_node<'a>(
                 tagged_string_from_node(child, opt, ts, context)?;
                 context.pop();
             }
-            NodeValue::Link(link) => {}
+            // FIX: these are broken (test 8)
+            NodeValue::Link(_link) => {}
             NodeValue::Image(_link) => {}
             NodeValue::FootnoteReference(_name) => {}
             _ => panic!(),
@@ -280,17 +314,17 @@ fn main() -> io::Result<()> {
     };
 
     let arena = Arena::new();
+
+    // Build AST
     let root = parse_document(&arena, &buffer, &ComrakOptions::default());
-    println!("{:#?}", root);
+
+    // println!("{:#?}", root);
+
+    // Format AST
     format_ast(&root, &arena, &options);
+
+    // Write AST to output
     format_commonmark(root, &ComrakOptions::default(), &mut outfile)?;
-
-    // let mut buffer = String::new();
-    // infile.read_to_string(&mut buffer)?;
-
-    // let buffer = buffer.trim();
-    // let mut outstream = BufWriter::new(outfile);
-    // outstream.flush().unwrap();
 
     Ok(())
 }
@@ -322,6 +356,11 @@ mod tests {
     #[test]
     fn multiline_emph() {
         assert!(is_expected(5));
+    }
+
+    #[test]
+    fn ignore_link_paragraphs() {
+        assert!(is_expected(8));
     }
 
     fn is_expected(testno: u32) -> bool {
