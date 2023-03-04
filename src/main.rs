@@ -68,6 +68,7 @@ impl<'a> StyledWord<'a> {
 }
 
 // Basically inheriting the Fragment trait from the Word member
+// Allows StyledWord to be wrapped
 impl Fragment for StyledWord<'_> {
     fn width(&self) -> f64 {
         self.word.width() // + (self.style.iter().map(|s| s.added_width()).sum::<usize>() as f64)
@@ -109,6 +110,29 @@ impl TaggedString {
             buf: String::new(),
             styles: vec![],
         }
+    }
+
+    fn to_words<'a>(&'a self) -> Vec<StyledWord<'a>> {
+        // TODO: reserve?
+        let mut words = vec![];
+        let sep = WordSeparator::new();
+
+        let mut styles = self.styles.iter();
+        let mut prev_style = styles.next().unwrap();
+        for style in styles {
+            words.extend(
+                sep.find_words(&self.buf[prev_style.0..style.0])
+                    .map(move |w| StyledWord::from(w, &prev_style.1)),
+            );
+            prev_style = style;
+        }
+
+        words.extend(
+            sep.find_words(&self.buf[prev_style.0..])
+                .map(move |w| StyledWord::from(w, &prev_style.1)),
+        );
+
+        words
     }
 }
 
@@ -246,7 +270,7 @@ fn format_ast<'a>(node: &'a AstNode<'a>, arena: &'a Arena<AstNode<'a>>, opt: &Op
         NodeValue::Paragraph => {
             let mut ts = TaggedString::new();
             tagged_string_from_node(node, opt, &mut ts, &mut vec![]).unwrap();
-            let words = tagged_string_to_word_vec(&ts);
+            let words = ts.to_words();
             let wrapped =
                 wrap_optimal_fit(&words, &[opt.line_width as f64], &Penalties::new()).unwrap();
             replace_paragraph_children(node, arena, opt, wrapped);
@@ -257,29 +281,6 @@ fn format_ast<'a>(node: &'a AstNode<'a>, arena: &'a Arena<AstNode<'a>>, opt: &Op
     for n in node.children() {
         format_ast(n, arena, opt);
     }
-}
-
-fn tagged_string_to_word_vec<'a>(ts: &'a TaggedString) -> Vec<StyledWord<'a>> {
-    // TODO: reserve?
-    let mut words = vec![];
-    let sep = WordSeparator::new();
-
-    let mut styles = ts.styles.iter();
-    let mut prev_style = styles.next().unwrap();
-    for style in styles {
-        words.extend(
-            sep.find_words(&ts.buf[prev_style.0..style.0])
-                .map(move |w| StyledWord::from(w, &prev_style.1)),
-        );
-        prev_style = style;
-    }
-
-    words.extend(
-        sep.find_words(&ts.buf[prev_style.0..])
-            .map(move |w| StyledWord::from(w, &prev_style.1)),
-    );
-
-    words
 }
 
 /// Wrap markdown files
@@ -378,8 +379,7 @@ mod tests {
     #[test]
     fn italic_word_width_single() {
         let s1 = "*word*";
-        let ts = tagged_string_from(s1);
-        let wv = tagged_string_to_word_vec(&ts);
+        let wv = tagged_string_from(s1).to_words();
         assert_eq!(
             wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
             vec![6]
@@ -389,8 +389,7 @@ mod tests {
     #[test]
     fn italic_word_width_double() {
         let s1 = "*word word*";
-        let ts = tagged_string_from(s1);
-        let wv = tagged_string_to_word_vec(&ts);
+        let wv = tagged_string_from(s1).to_words();
         assert_eq!(
             wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
             vec![5, 5]
@@ -400,8 +399,7 @@ mod tests {
     #[test]
     fn italic_word_width_triple() {
         let s1 = "*word word word*";
-        let ts = tagged_string_from(s1);
-        let wv = tagged_string_to_word_vec(&ts);
+        let wv = tagged_string_from(s1).to_words();
         assert_eq!(
             wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
             vec![5, 4, 5]
