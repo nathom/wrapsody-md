@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Read};
+use std::io::{self, BufWriter, Read, Write};
 use std::str::{self, Utf8Error};
 
 use clap::Parser;
@@ -234,7 +234,7 @@ fn tagged_string_from_node<'a>(
             NodeValue::FootnoteReference(_name) => {
                 // "
             }
-            _ => panic!(),
+            v => panic!("{}", format!("{:?}", v)),
         }
     }
 
@@ -329,10 +329,12 @@ fn main() -> io::Result<()> {
         Some(filename) => {
             let mut outfile = BufWriter::new(File::open(filename)?);
             format_commonmark(root, &ComrakOptions::default(), &mut outfile)?;
+            outfile.flush()?;
         }
         None => {
             let mut outfile = BufWriter::new(io::stdout());
             format_commonmark(root, &ComrakOptions::default(), &mut outfile)?;
+            outfile.flush()?;
         }
     }
 
@@ -371,6 +373,50 @@ mod tests {
     #[test]
     fn ignore_link_paragraphs() {
         assert!(is_expected(8));
+    }
+
+    #[test]
+    fn italic_word_width_single() {
+        let s1 = "*word*";
+        let ts = tagged_string_from(s1);
+        let wv = tagged_string_to_word_vec(&ts);
+        assert_eq!(
+            wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
+            vec![6]
+        );
+    }
+
+    #[test]
+    fn italic_word_width_double() {
+        let s1 = "*word word*";
+        let ts = tagged_string_from(s1);
+        let wv = tagged_string_to_word_vec(&ts);
+        assert_eq!(
+            wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
+            vec![5, 5]
+        );
+    }
+
+    #[test]
+    fn italic_word_width_triple() {
+        let s1 = "*word word word*";
+        let ts = tagged_string_from(s1);
+        let wv = tagged_string_to_word_vec(&ts);
+        assert_eq!(
+            wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
+            vec![5, 4, 5]
+        );
+    }
+
+    fn tagged_string_from(s: &str) -> TaggedString {
+        let arena = Arena::new();
+        let root = parse_document(&arena, &s, &ComrakOptions::default());
+        let paragraph = root.children().next().unwrap();
+        let mut ts = TaggedString::new();
+        let mut ctx = vec![];
+        tagged_string_from_node(&paragraph, &Options { line_width: 80 }, &mut ts, &mut ctx)
+            .unwrap();
+        ts
     }
 
     fn is_expected(testno: u32) -> bool {
