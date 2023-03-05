@@ -5,7 +5,7 @@ use std::str::{self, Utf8Error};
 
 use clap::Parser;
 use comrak::arena_tree::Node;
-use comrak::nodes::{Ast, AstNode, NodeValue};
+use comrak::nodes::{Ast, AstNode, NodeLink, NodeValue};
 use comrak::{format_commonmark, parse_document, Arena, ComrakOptions};
 use textwrap::core::{Fragment, Word};
 use textwrap::wrap_algorithms::{wrap_optimal_fit, Penalties};
@@ -18,25 +18,25 @@ enum Style {
     Strong, // bold
     Strikethrough,
     Superscript,
+    Link(Vec<u8>),
+    Image(Vec<u8>),
 }
 
 impl Style {
-    // ditched because it doesn't work
-    fn _added_width(&self) -> usize {
-        match self {
-            Self::Emph => 2,          // *__*
-            Self::Strong => 4,        // **__**
-            Self::Strikethrough => 4, // ~~__~~
-            Self::Superscript => 11,  // <sup>__</sup>
-        }
-    }
-
     fn to_node<'a>(&self) -> AstNode<'a> {
         let nv = match self {
             Style::Emph => NodeValue::Emph,
             Style::Strong => NodeValue::Strong,
             Style::Strikethrough => NodeValue::Strikethrough,
             Style::Superscript => NodeValue::Superscript,
+            Style::Link(url) => NodeValue::Link(NodeLink {
+                url: url.to_vec(),
+                title: vec![],
+            }),
+            Style::Image(url) => NodeValue::Image(NodeLink {
+                url: url.to_vec(),
+                title: vec![],
+            }),
         };
         Node::new(RefCell::new(Ast::new(nv)))
     }
@@ -47,19 +47,24 @@ impl Style {
 ///
 /// StyledWord.style.is_empty() => normal text
 /// Otherwise it is a list of styles that the string has
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct StyledWord<'a> {
     word: Word<'a>,
     style: &'a Vec<Style>,
 }
 
 impl<'a> StyledWord<'a> {
-    fn from(word: Word<'a>, style: &'a Vec<Style>) -> Self {
+    fn from(mut word: Word<'a>, style: &'a Vec<Style>) -> Self {
+        word.whitespace = " ";
         Self { word, style }
     }
 
     fn str(&self) -> &'a str {
         self.word.word
+    }
+
+    fn _len(&self) -> usize {
+        self.word.word.len()
     }
 
     fn has_style(&self, s: &Vec<Style>) -> bool {
@@ -90,6 +95,7 @@ struct Options {
 
 /// This is a more efficient intermediate representation
 /// of Vec<StyledWord>
+#[derive(Debug, PartialEq)]
 struct TaggedString {
     /// All words joined with a space
     buf: String,
@@ -112,6 +118,13 @@ impl TaggedString {
         }
     }
 
+    fn _with_capacity(cap: usize) -> Self {
+        Self {
+            buf: String::with_capacity(cap),
+            styles: vec![],
+        }
+    }
+
     fn to_words<'a>(&'a self) -> Vec<StyledWord<'a>> {
         // TODO: reserve?
         let mut words = vec![];
@@ -122,6 +135,7 @@ impl TaggedString {
         for style in styles {
             words.extend(
                 sep.find_words(&self.buf[prev_style.0..style.0])
+                    .filter(move |w| w.width() > 0.0)
                     .map(move |w| StyledWord::from(w, &prev_style.1)),
             );
             prev_style = style;
@@ -129,11 +143,109 @@ impl TaggedString {
 
         words.extend(
             sep.find_words(&self.buf[prev_style.0..])
+                .filter(move |w| w.width() > 0.0)
                 .map(move |w| StyledWord::from(w, &prev_style.1)),
         );
 
         words
     }
+}
+
+/// Re-"block" together the style values of each word in a folded line
+fn fold_styles<'a>(words: &[StyledWord<'a>]) -> Vec<(usize, &'a Vec<Style>)> {
+    let mut ret = vec![];
+    let mut it = words.iter();
+    let prev_w = it.next().unwrap();
+
+    ret.push((0, prev_w.style));
+
+    it.fold((1, prev_w), |(idx, pw), w| {
+        if !w.has_style(pw.style) {
+            ret.push((idx, w.style));
+        }
+        (idx + 1, w)
+    });
+
+    ret
+}
+
+fn build_node<'a, 'b>(
+    styles: &[(usize, &'b Vec<Style>)],
+    line: &[StyledWord<'b>],
+    arena: &'a Arena<AstNode<'a>>,
+    parent: &'a AstNode<'a>,
+    layer: usize,
+) {
+    // partition into plain text and styled text parts
+    let mut styles_it = styles.iter().enumerate();
+    let (_, &(mut pi, mut ps)) = styles_it.next().unwrap();
+    for (j, &(i, s)) in styles_it {
+        if ps.get(layer) != s.get(layer) {
+            // style has switched from text -> style or style -> text
+            match ps.get(layer) {
+                None => {
+                    // this means a plain text section has just ended
+                    // so we add a plain text node
+                    let buf = words_to_vec_u8(&line[pi..i], j > 1, true);
+                    let child: &AstNode =
+                        arena.alloc(Node::new(RefCell::new(Ast::new(NodeValue::Text(buf)))));
+                    parent.append(child);
+                }
+                Some(s) => {
+                    // this means a style section has just ended
+                    // we create the appropriate node for the style
+                    // and recursively call this function to handle its
+                    // children
+
+                    let new_parent = arena.alloc(s.to_node());
+                    // delete the style layer we just handled
+
+                    build_node(styles, &line[pi..i], arena, new_parent, layer + 1);
+
+                    parent.append(new_parent);
+                }
+            }
+            (pi, ps) = (i, s);
+        }
+    }
+
+    match ps.get(layer) {
+        None => {
+            let buf = words_to_vec_u8(&line[pi..], false, false);
+            let child: &AstNode =
+                arena.alloc(Node::new(RefCell::new(Ast::new(NodeValue::Text(buf)))));
+            parent.append(child);
+        }
+        Some(s) => {
+            let new_parent = arena.alloc(s.to_node());
+            // delete the style layer we just handled
+
+            build_node(styles, &line[pi..], arena, new_parent, layer + 1);
+
+            parent.append(new_parent);
+        }
+    }
+
+    // arena.alloc();
+}
+
+fn words_to_vec_u8<'a>(
+    line: &[StyledWord<'a>],
+    leading_space: bool,
+    trailing_space: bool,
+) -> Vec<u8> {
+    let mut buf = line.iter().map(move |w| w.str()).fold(
+        if leading_space { vec![b' '] } else { vec![] },
+        |mut buf, s| {
+            buf.extend(s.bytes());
+            buf.push(b' ');
+            buf
+        },
+    );
+    if !trailing_space {
+        buf.pop();
+    }
+    buf
 }
 
 /// Given a wrapped 2D vec of StyledWords, replace the paragraph Node's
@@ -144,66 +256,18 @@ fn replace_paragraph_children<'a, 'b>(
     _opt: &Options,
     wrapped: Vec<&[StyledWord<'b>]>,
 ) {
-    let mut curr_style: &Vec<Style> = &vec![];
-
     // Detach all children
     for c in paragraph.children() {
         c.detach();
     }
 
-    let mut buf: Vec<u8>;
     for line in wrapped {
-        // for word in line
-        // if style has changed
-        //
-        // create appropriate node, move buffer into node, clear buffer, set style to new style,
-        // continue
-        //
-        // if line is over
-        // create appropriate node, move buffer into node, add softbreak, clear buffer, continue
-        buf = vec![];
-        for word in line {
-            if !word.has_style(curr_style) {
-                if word.style.is_empty() {
-                    buf.pop();
-                }
-                let n = create_node_with_style(curr_style, buf, arena);
-                paragraph.append(n);
-                buf = vec![];
-            }
-            buf.extend(word.str().bytes());
-            buf.push(b' ');
-            curr_style = word.style;
-        }
-        buf.pop();
-        let n = create_node_with_style(curr_style, buf, arena);
-        paragraph.append(n);
-        // add soft break
-        paragraph.append(arena.alloc(Node::new(RefCell::new(Ast::new(NodeValue::SoftBreak)))));
-    }
-}
+        let styles = fold_styles(line);
+        build_node(&styles, line, arena, paragraph, 0);
 
-/// Returns a node which contains the proper AST that reflects
-/// the styles applyed to buf
-fn create_node_with_style<'a>(
-    styles: &Vec<Style>,
-    buf: Vec<u8>,
-    arena: &'a Arena<AstNode<'a>>,
-) -> &'a AstNode<'a> {
-    let child: &AstNode = arena.alloc(Node::new(RefCell::new(Ast::new(NodeValue::Text(buf)))));
-    if styles.is_empty() {
-        return child;
+        let softbreak = Node::new(RefCell::new(Ast::new(NodeValue::SoftBreak)));
+        paragraph.append(arena.alloc(softbreak));
     }
-
-    let mut child = child;
-    // We go in reverse order since we are building bottom-up
-    for style in styles.iter().rev() {
-        let parent = arena.alloc(style.to_node());
-        parent.append(child);
-        child = parent;
-    }
-
-    return child;
 }
 
 /// Given a node with text children (i.e. Paragraph) generate a TaggedString
@@ -248,17 +312,23 @@ fn tagged_string_from_node<'a>(
             // FIX: these are broken (test 8)
             // These not being implemented is the cause of the unwrap panic
             // on test 8
-            NodeValue::Link(_link) => {
+            NodeValue::Link(link) => {
                 // convert tree into "{title}\0{url}" with Style::Link
                 // push that string and style into the buffer
+                // let s = str::from_utf8(&link.url)?.to_string();
+                context.push(Style::Link(link.url.clone()));
+                tagged_string_from_node(child, opt, ts, context)?;
+                context.pop();
             }
-            NodeValue::Image(_link) => {
-                // same as link, except use Style::Image
+            NodeValue::Image(link) => {
+                context.push(Style::Image(link.url.clone()));
+                tagged_string_from_node(child, opt, ts, context)?;
+                context.pop();
             }
             NodeValue::FootnoteReference(_name) => {
-                // "
+                todo!()
             }
-            v => panic!("{}", format!("{:?}", v)),
+            _ => todo!(),
         }
     }
 
@@ -320,8 +390,6 @@ fn main() -> io::Result<()> {
     // Build AST
     let root = parse_document(&arena, &buffer, &ComrakOptions::default());
 
-    // println!("{:#?}", root);
-
     // Format AST
     format_ast(&root, &arena, &options);
 
@@ -348,38 +416,55 @@ mod tests {
 
     #[test]
     fn wrap_but_ignore_code() {
-        assert!(is_expected(1));
+        is_expected(1);
     }
 
     #[test]
     fn keep_emph_and_strong() {
-        assert!(is_expected(2));
+        is_expected(2);
     }
 
     #[test]
     fn block_quotes() {
-        assert!(is_expected(3));
+        is_expected(3);
     }
 
     #[test]
     fn rewrap_paragraphs() {
-        assert!(is_expected(4));
+        is_expected(4);
     }
 
     #[test]
     fn multiline_emph() {
-        assert!(is_expected(5));
+        is_expected(5);
     }
 
     #[test]
     fn ignore_link_paragraphs() {
-        assert!(is_expected(8));
+        is_expected(8);
+    }
+
+    #[test]
+    fn style_within_link_preserved() {
+        is_expected(9);
+    }
+
+    #[test]
+    fn link_word_lengths() {
+        let s = "[*link* with many **styles**](url)";
+        let ts = tagged_string_from(s);
+        let wv = ts.to_words();
+        assert_eq!(
+            wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
+            vec![7, 4, 4, 16]
+        );
     }
 
     #[test]
     fn italic_word_width_single() {
         let s1 = "*word*";
-        let wv = tagged_string_from(s1).to_words();
+        let ts = tagged_string_from(s1);
+        let wv = ts.to_words();
         assert_eq!(
             wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
             vec![6]
@@ -389,7 +474,8 @@ mod tests {
     #[test]
     fn italic_word_width_double() {
         let s1 = "*word word*";
-        let wv = tagged_string_from(s1).to_words();
+        let ts = tagged_string_from(s1);
+        let wv = ts.to_words();
         assert_eq!(
             wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
             vec![5, 5]
@@ -399,7 +485,8 @@ mod tests {
     #[test]
     fn italic_word_width_triple() {
         let s1 = "*word word word*";
-        let wv = tagged_string_from(s1).to_words();
+        let ts = tagged_string_from(s1);
+        let wv = ts.to_words();
         assert_eq!(
             wv.iter().map(|w| w.width() as usize).collect::<Vec<_>>(),
             vec![5, 4, 5]
@@ -417,7 +504,7 @@ mod tests {
         ts
     }
 
-    fn is_expected(testno: u32) -> bool {
+    fn is_expected(testno: u32) {
         let input = fs::read_to_string(format!("tests/test{}.md", testno)).unwrap();
         let expected = fs::read_to_string(format!("tests/test{}_exp.md", testno)).unwrap();
         let mut output: Vec<u8> = vec![];
@@ -427,6 +514,7 @@ mod tests {
         format_ast(&root, &arena, &Options { line_width: 80 });
         format_commonmark(root, &ComrakOptions::default(), &mut output).unwrap();
 
-        str::from_utf8(&output).unwrap() == expected
+        let out = str::from_utf8(&output).unwrap();
+        assert_eq!(out, expected)
     }
 }
