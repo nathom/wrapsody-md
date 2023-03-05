@@ -538,6 +538,21 @@ mod tests {
     }
 
     #[test]
+    fn short_list_elements_preserved() {
+        is_expected(11);
+    }
+
+    #[test]
+    fn long_link_title_gets_wrapped() {
+        is_expected(12);
+    }
+
+    #[test]
+    fn link_title_with_newline_gets_rewrapped() {
+        is_expected(13);
+    }
+
+    #[test]
     fn link_word_lengths() {
         let s = "[*link* with many **styles**](url)";
         let ts = tagged_string_from(s);
