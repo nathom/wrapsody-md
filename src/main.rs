@@ -7,6 +7,7 @@ use clap::Parser;
 use comrak::arena_tree::Node;
 use comrak::nodes::{Ast, AstNode, NodeLink, NodeValue};
 use comrak::{format_commonmark, parse_document, Arena, ComrakOptions};
+use itertools::{EitherOrBoth, Itertools};
 use textwrap::core::{Fragment, Word};
 use textwrap::wrap_algorithms::{wrap_optimal_fit, Penalties};
 use textwrap::{self, WordSeparator};
@@ -40,6 +41,28 @@ impl Style {
         };
         Node::new(RefCell::new(Ast::new(nv)))
     }
+
+    fn left_width(&self) -> usize {
+        match self {
+            Style::Emph => 1,
+            Style::Strong => 2,
+            Style::Strikethrough => 2,
+            Style::Superscript => 4,
+            Style::Link(_) => 1,
+            Style::Image(_) => 2,
+        }
+    }
+
+    fn right_width(&self) -> usize {
+        match self {
+            Style::Emph => 1,
+            Style::Strong => 2,
+            Style::Strikethrough => 2,
+            Style::Superscript => 5,                // </sup>
+            Style::Link(url) => 2 + url.len() + 1,  // ](url)
+            Style::Image(url) => 2 + url.len() + 1, // ](url)
+        }
+    }
 }
 
 /// This is the struct that represents one word, which is moved around
@@ -51,12 +74,17 @@ impl Style {
 struct StyledWord<'a> {
     word: Word<'a>,
     style: &'a Vec<Style>,
+    style_width: usize,
 }
 
 impl<'a> StyledWord<'a> {
     fn from(mut word: Word<'a>, style: &'a Vec<Style>) -> Self {
         word.whitespace = " ";
-        Self { word, style }
+        Self {
+            word,
+            style,
+            style_width: 0,
+        }
     }
 
     fn str(&self) -> &'a str {
@@ -70,13 +98,17 @@ impl<'a> StyledWord<'a> {
     fn has_style(&self, s: &Vec<Style>) -> bool {
         self.style == s
     }
+
+    fn add_width(&mut self, w: usize) {
+        self.style_width += w;
+    }
 }
 
 // Basically inheriting the Fragment trait from the Word member
 // Allows StyledWord to be wrapped
 impl Fragment for StyledWord<'_> {
     fn width(&self) -> f64 {
-        self.word.width() // + (self.style.iter().map(|s| s.added_width()).sum::<usize>() as f64)
+        self.word.width() + self.style_width as f64
     }
     fn whitespace_width(&self) -> f64 {
         self.word.whitespace_width()
@@ -127,27 +159,83 @@ impl TaggedString {
 
     fn to_words<'a>(&'a self) -> Vec<StyledWord<'a>> {
         // TODO: reserve?
-        let mut words = vec![];
+        let mut ret = vec![];
         let sep = WordSeparator::new();
 
         let mut styles = self.styles.iter();
+        let mut context: Vec<&Style> = vec![];
         let mut prev_style = styles.next().unwrap();
+        context.extend(&prev_style.1);
+        let mut left_width = context.iter().map(|s| s.left_width()).sum::<usize>();
         for style in styles {
-            words.extend(
-                sep.find_words(&self.buf[prev_style.0..style.0])
-                    .filter(move |w| w.width() > 0.0)
-                    .map(move |w| StyledWord::from(w, &prev_style.1)),
-            );
+            // let s = "[*link* with many **styles**](url)";
+
+            // find styles that have been removed
+            let (num_removed, mut new_context) = Self::calc_diff(&prev_style.1, &style.1);
+            let right_width = (0..num_removed)
+                .map(|_| context.pop().unwrap().right_width())
+                .sum::<usize>();
+            //
+
+            let mut words: Vec<StyledWord> = sep
+                .find_words(&self.buf[prev_style.0..style.0])
+                .filter(move |w| w.width() > 0.0)
+                .map(move |w| StyledWord::from(w, &prev_style.1))
+                .collect();
+
+            debug_assert!(words.len() > 0);
+
+            let l = words.len();
+            words[0].add_width(left_width);
+            words[l - 1].add_width(right_width);
+
+            ret.append(&mut words);
+
+            left_width = new_context.iter().map(|s| s.left_width()).sum::<usize>();
+            context.append(&mut new_context);
+
+            // find styles that have been added
             prev_style = style;
         }
 
-        words.extend(
-            sep.find_words(&self.buf[prev_style.0..])
-                .filter(move |w| w.width() > 0.0)
-                .map(move |w| StyledWord::from(w, &prev_style.1)),
-        );
+        let right_width = context.iter().map(|s| s.right_width()).sum::<usize>();
 
-        words
+        let mut words: Vec<StyledWord> = sep
+            .find_words(&self.buf[prev_style.0..])
+            .filter(move |w| w.width() > 0.0)
+            .map(move |w| StyledWord::from(w, &prev_style.1))
+            .collect();
+
+        debug_assert!(words.len() > 0);
+
+        let l = words.len();
+        words[0].add_width(left_width);
+        words[l - 1].add_width(right_width);
+
+        ret.append(&mut words);
+
+        ret
+    }
+
+    fn calc_diff<'a>(prev: &'a Vec<Style>, curr: &'a Vec<Style>) -> (usize, Vec<&'a Style>) {
+        prev.iter().zip_longest(curr.iter()).fold(
+            (0, vec![]),
+            |(num_removed, mut new_context), lr| match lr {
+                EitherOrBoth::Left(_) => (num_removed + 1, new_context),
+                EitherOrBoth::Right(r) => {
+                    new_context.push(r);
+                    (num_removed, new_context)
+                }
+                EitherOrBoth::Both(l, r) => {
+                    if l != r {
+                        new_context.push(r);
+                        (num_removed + 1, new_context)
+                    } else {
+                        (num_removed, new_context)
+                    }
+                }
+            },
+        )
     }
 }
 
