@@ -183,7 +183,9 @@ impl TaggedString {
                 .map(move |w| StyledWord::from(w, &prev_style.1))
                 .collect();
 
-            debug_assert!(words.len() > 0);
+            if words.len() == 0 {
+                continue;
+            }
 
             let l = words.len();
             words[0].add_width(left_width);
@@ -372,6 +374,9 @@ fn tagged_string_from_node<'a>(
         match val {
             NodeValue::Text(text) => {
                 let s = str::from_utf8(&text)?;
+                if s.trim().len() == 0 {
+                    continue;
+                }
                 let prev_len = ts.buf.len();
                 ts.buf.push_str(s);
                 ts.styles.push((prev_len, context.clone()));
@@ -504,52 +509,52 @@ mod tests {
 
     #[test]
     fn wrap_but_ignore_code() {
-        is_expected(1);
+        run_test_file_no(1);
     }
 
     #[test]
     fn keep_emph_and_strong() {
-        is_expected(2);
+        run_test_file_no(2);
     }
 
     #[test]
     fn block_quotes() {
-        is_expected(3);
+        run_test_file_no(3);
     }
 
     #[test]
     fn rewrap_paragraphs() {
-        is_expected(4);
+        run_test_file_no(4);
     }
 
     #[test]
     fn multiline_emph() {
-        is_expected(5);
+        run_test_file_no(5);
     }
 
     #[test]
     fn ignore_link_paragraphs() {
-        is_expected(8);
+        run_test_file_no(8);
     }
 
     #[test]
     fn style_within_link_preserved() {
-        is_expected(9);
+        run_test_file_no(9);
     }
 
     #[test]
     fn short_list_elements_preserved() {
-        is_expected(11);
+        run_test_file_no(11);
     }
 
     #[test]
     fn long_link_title_gets_wrapped() {
-        is_expected(12);
+        run_test_file_no(12);
     }
 
     #[test]
     fn link_title_with_newline_gets_rewrapped() {
-        is_expected(13);
+        run_test_file_no(13);
     }
 
     #[test]
@@ -596,6 +601,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn adjacent_italics_get_merged() {
+        run_test_file_no(14);
+    }
+
+    #[test]
+    fn adjacent_boldface_get_merged() {
+        run_test_file_no(15);
+    }
+
     fn tagged_string_from(s: &str) -> TaggedString {
         let arena = Arena::new();
         let root = parse_document(&arena, &s, &ComrakOptions::default());
@@ -607,7 +622,7 @@ mod tests {
         ts
     }
 
-    fn is_expected(testno: u32) {
+    fn run_test_file_no(testno: u32) {
         let input = fs::read_to_string(format!("tests/test{}.md", testno)).unwrap();
         let expected = fs::read_to_string(format!("tests/test{}_exp.md", testno)).unwrap();
         let mut output: Vec<u8> = vec![];
