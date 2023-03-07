@@ -7,9 +7,6 @@ edition = "2021"
 
 [dependencies]
 comrak = "0.16"
-textwrap = {version = "0.16", features = ["smawk"]}
-clap = {version = "4.1", features = ["derive"]}
-itertools = "0.10"
 
 [profile.release]
 debug = true
