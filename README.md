@@ -1,19 +1,20 @@
-# wrapsody-md
+# mdwrap
 
-A small Rust program that wraps markdown files. Uses the [comrak](https://docs.rs/comrak/)
-AST library so that rendering remains accurate.
+A small Rust program that wraps markdown files. Uses the
+[comrak](https://docs.rs/comrak/) AST library so that rendering
+remains accurate.
 
 ## Usage
 
 Write wrapped input.md to output.md.
 
-```bash
+``` bash
 mdwrap -f input.md -o output.md
 ```
 
 Write wrapped markdown from stdin to stdout
 
-```bash
+``` bash
 mdwrap
 ```
 
@@ -21,13 +22,14 @@ mdwrap
 
 As a vim command
 
-```vimscript
+``` vimscript
 %!mdwrap
 ```
 
-With [formatter.nvim](https://github.com/mhartington/formatter.nvim) and lazy.nvim (plugin manager).
+With [formatter.nvim](https://github.com/mhartington/formatter.nvim)
+and lazy.nvim (plugin manager).
 
-```lua
+``` lua
 local function wrapper()
 	return {
 		exe = "mdwrap",
@@ -49,8 +51,4 @@ return {
 	end,
 	cmd = "FormatWrite",
  }
- ```
-  
-  }
-}
 ```
