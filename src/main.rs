@@ -1,6 +1,5 @@
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
-use std::str;
 
 use clap::Parser;
 use comrak::{format_commonmark, parse_document, Arena, ComrakOptions};
@@ -37,6 +36,7 @@ fn main() -> io::Result<()> {
 
     let mut comrak_options = ComrakOptions::default();
     comrak_options.render.width = args.linewidth;
+    comrak_options.extension.table = true;
 
     let root = parse_document(&arena, &buffer, &comrak_options);
     match args.outfile {
