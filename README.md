@@ -6,7 +6,21 @@ remains accurate.
 
 ## Usage
 
+```
+Wrap markdown files
+
+Usage: wrapsody-md [OPTIONS]
+
+Options:
+  -f, --file <FILE>            Input file, use stdio if none provided
+  -o, --outfile <OUTFILE>      Output file, use stdout if none provided
+  -l, --linewidth <LINEWIDTH>  Maximum line width in chars [default: 80]
+  -h, --help                   Print help
+  -V, --version                Print version
+```
+
 Write wrapped input.md to output.md.
+
 
 ``` bash
 mdwrap -f input.md -o output.md
